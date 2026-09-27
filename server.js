@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { execFile } = require("child_process");
 const AdmZip = require("adm-zip");
 
@@ -13,6 +14,8 @@ const upload = multer({
     fileSize: 50 * 1024 * 1024
   }
 });
+
+const downloads = new Map();
 
 function findPom(dir) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -106,7 +109,7 @@ app.post("/build", upload.single("project"), (req, res) => {
 
           return res.status(400).json({
             success: false,
-            error: "Maven finished but target folder was not found."
+            error: "Target folder was not found."
           });
         }
 
@@ -125,22 +128,34 @@ app.post("/build", upload.single("project"), (req, res) => {
 
           return res.status(400).json({
             success: false,
-            error: "Maven finished but no JAR was produced.",
+            error: "No JAR was produced.",
             output: stdout
           });
         }
 
-        const jarPath = path.join(target, jars[0]);
+        const jarName = jars[0];
+        const jarPath = path.join(target, jarName);
 
-        console.log(`JAR created: ${jars[0]}`);
+        const downloadId = crypto.randomBytes(24).toString("hex");
 
-        res.download(jarPath, jars[0], err => {
-          fs.rmSync(dir, { recursive: true, force: true });
-          fs.rmSync(req.file.path, { force: true });
+        downloads.set(downloadId, {
+          path: jarPath,
+          name: jarName,
+          createdAt: Date.now(),
+          buildDir: dir,
+          uploadPath: req.file.path
+        });
 
-          if (err) {
-            console.error("Download error:", err);
-          }
+        const baseUrl = `${req.protocol}://${req.get("host")}`;
+        const downloadUrl = `${baseUrl}/download/${downloadId}`;
+
+        console.log(`JAR created: ${jarName}`);
+        console.log(`Download URL: ${downloadUrl}`);
+
+        return res.json({
+          success: true,
+          fileName: jarName,
+          downloadUrl: downloadUrl
         });
       }
     );
@@ -155,11 +170,44 @@ app.post("/build", upload.single("project"), (req, res) => {
       fs.rmSync(req.file.path, { force: true });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: error.message
     });
   }
+});
+
+app.get("/download/:id", (req, res) => {
+  const file = downloads.get(req.params.id);
+
+  if (!file) {
+    return res.status(404).send("Download expired or not found.");
+  }
+
+  if (!fs.existsSync(file.path)) {
+    downloads.delete(req.params.id);
+    return res.status(404).send("File no longer exists.");
+  }
+
+  res.download(file.path, file.name, error => {
+    if (error) {
+      console.error("Download error:", error);
+    }
+
+    try {
+      if (fs.existsSync(file.buildDir)) {
+        fs.rmSync(file.buildDir, { recursive: true, force: true });
+      }
+
+      if (fs.existsSync(file.uploadPath)) {
+        fs.rmSync(file.uploadPath, { force: true });
+      }
+    } catch (cleanupError) {
+      console.error("Cleanup error:", cleanupError);
+    }
+
+    downloads.delete(req.params.id);
+  });
 });
 
 const PORT = process.env.PORT || 8080;
