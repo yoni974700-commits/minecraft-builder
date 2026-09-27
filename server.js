@@ -14,6 +14,25 @@ const upload = multer({
   }
 });
 
+function findPom(dir) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+
+    if (entry.isFile() && entry.name === "pom.xml") {
+      return path.dirname(fullPath);
+    }
+
+    if (entry.isDirectory()) {
+      const found = findPom(fullPath);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
 app.get("/", (req, res) => {
   res.send("Minecraft Maven Builder is ONLINE!");
 });
@@ -35,22 +54,38 @@ app.post("/build", upload.single("project"), (req, res) => {
     const zip = new AdmZip(req.file.path);
     zip.extractAllTo(dir, true);
 
+    console.log("ZIP extracted.");
+
+    const projectDir = findPom(dir);
+
+    if (!projectDir) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(req.file.path, { force: true });
+
+      return res.status(400).json({
+        success: false,
+        error: "No pom.xml found inside the ZIP."
+      });
+    }
+
+    console.log(`Found Maven project: ${projectDir}`);
     console.log("Starting Maven build...");
 
     execFile(
       "mvn",
       ["clean", "package", "-DskipTests"],
       {
-        cwd: dir,
+        cwd: projectDir,
         timeout: 300000,
-        maxBuffer: 10 * 1024 * 1024
+        maxBuffer: 20 * 1024 * 1024
       },
       (error, stdout, stderr) => {
         if (error) {
-          console.error("Maven build failed:");
-          console.error("MAVEN ERROR:", stderr);
-          console.error("MAVEN OUTPUT:", stdout);
+          console.error("MAVEN ERROR:");
+          console.error(stderr);
 
+          console.error("MAVEN OUTPUT:");
+          console.error(stdout);
 
           fs.rmSync(dir, { recursive: true, force: true });
           fs.rmSync(req.file.path, { force: true });
@@ -63,7 +98,7 @@ app.post("/build", upload.single("project"), (req, res) => {
 
         console.log("Maven build completed!");
 
-        const target = path.join(dir, "target");
+        const target = path.join(projectDir, "target");
 
         if (!fs.existsSync(target)) {
           fs.rmSync(dir, { recursive: true, force: true });
@@ -71,7 +106,7 @@ app.post("/build", upload.single("project"), (req, res) => {
 
           return res.status(400).json({
             success: false,
-            error: "Maven finished but target folder was not found"
+            error: "Maven finished but target folder was not found."
           });
         }
 
@@ -90,7 +125,7 @@ app.post("/build", upload.single("project"), (req, res) => {
 
           return res.status(400).json({
             success: false,
-            error: "Maven finished but no JAR was produced",
+            error: "Maven finished but no JAR was produced.",
             output: stdout
           });
         }
@@ -110,7 +145,7 @@ app.post("/build", upload.single("project"), (req, res) => {
       }
     );
   } catch (error) {
-    console.error(error);
+    console.error("Server error:", error);
 
     if (fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
