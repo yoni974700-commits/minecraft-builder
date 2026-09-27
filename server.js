@@ -48,7 +48,9 @@ app.post("/build", upload.single("project"), (req, res) => {
       (error, stdout, stderr) => {
         if (error) {
           console.error("Maven build failed:");
-          console.error(stderr);
+          console.error("MAVEN ERROR:", stderr);
+          console.error("MAVEN OUTPUT:", stdout);
+
 
           fs.rmSync(dir, { recursive: true, force: true });
           fs.rmSync(req.file.path, { force: true });
